@@ -1,0 +1,139 @@
+<style>
+    /* 다른 블로그 요소에 영향이 없도록 게임 영역 안에만 스타일을 적용합니다. */
+    #mole-game { box-sizing:border-box; max-width:540px; margin:24px auto; padding:22px 16px; border-radius:24px; background:linear-gradient(180deg,#e8f9ed,#d4edda); color:#243c2e; font-family:system-ui,-apple-system,'Malgun Gothic',sans-serif; text-align:center; box-shadow:0 8px 24px #1b5a3030; }
+    #mole-game * { box-sizing:border-box; }
+    #mole-game h1 { font-size:clamp(24px,6vw,32px); margin:2px 0 8px; }
+    #mole-game .help { margin:0 0 16px; font-size:14px; color:#54705d; }
+    #mole-game .stats { display:grid; grid-template-columns:repeat(3,1fr); gap:8px; margin-bottom:16px; }
+    #mole-game .stat { padding:10px 3px; background:#fff; border-radius:13px; }
+    #mole-game .stat span { display:block; font-size:12px; color:#60816b; }
+    #mole-game .stat strong { display:block; font-size:23px; font-variant-numeric:tabular-nums; }
+    #mole-game .board { display:grid; grid-template-columns:repeat(3,1fr); gap:12px; padding:12px; background:#83bb83; border-radius:18px; }
+    #mole-game .hole { position:relative; display:grid; place-items:center; aspect-ratio:1; width:100%; padding:0; border:0; border-radius:50%; background:radial-gradient(ellipse at center,#61442e 0%,#39291f 64%,#7aa575 66%); cursor:pointer; touch-action:manipulation; -webkit-tap-highlight-color:transparent; overflow:hidden; }
+    #mole-game .hole .face { transform:translateY(120%); transition:transform .13s ease; font-size:clamp(37px,11vw,65px); line-height:1; user-select:none; pointer-events:none; }
+    #mole-game .hole.active .face { transform:translateY(0); }
+    #mole-game .hole.hit { background:#f0d47a; }
+    #mole-game .hole:focus-visible, #mole-game .start:focus-visible { outline:4px solid #1d68d1; outline-offset:3px; }
+    #mole-game .start { margin-top:18px; min-height:50px; width:100%; border:0; border-radius:13px; background:#267a45; color:white; font-weight:800; font-size:17px; cursor:pointer; touch-action:manipulation; }
+    #mole-game .start:disabled { background:#8aa995; cursor:default; }
+    #mole-game .message { min-height:24px; margin:13px 0 0; color:#315d3e; font-size:14px; font-weight:600; }
+    @media (max-width:360px) { #mole-game { padding:16px 10px; } #mole-game .board { gap:7px; padding:9px; } }
+    @media (prefers-reduced-motion:reduce) { #mole-game .hole .face { transition:none; } }
+  </style>
+<section id="mole-game" aria-label="두더지 잡기 게임">
+    <h1>🐹 두더지 잡기</h1>
+    <p class="help">30초 동안 나타나는 두더지를 빠르게 눌러보세요!</p>
+    <div class="stats">
+      <div class="stat"><span>점수</span><strong id="mole-score">0</strong></div>
+      <div class="stat"><span>남은 시간</span><strong id="mole-time">30</strong></div>
+      <div class="stat"><span>내 최고점</span><strong id="mole-best">0</strong></div>
+    </div>
+    <div class="board" id="mole-board" aria-label="두더지 구멍 9개">
+      <button class="hole" type="button" aria-label="1번 구멍"><span class="face">🐹</span></button>
+      <button class="hole" type="button" aria-label="2번 구멍"><span class="face">🐹</span></button>
+      <button class="hole" type="button" aria-label="3번 구멍"><span class="face">🐹</span></button>
+      <button class="hole" type="button" aria-label="4번 구멍"><span class="face">🐹</span></button>
+      <button class="hole" type="button" aria-label="5번 구멍"><span class="face">🐹</span></button>
+      <button class="hole" type="button" aria-label="6번 구멍"><span class="face">🐹</span></button>
+      <button class="hole" type="button" aria-label="7번 구멍"><span class="face">🐹</span></button>
+      <button class="hole" type="button" aria-label="8번 구멍"><span class="face">🐹</span></button>
+      <button class="hole" type="button" aria-label="9번 구멍"><span class="face">🐹</span></button>
+    </div>
+    <button type="button" class="start" id="mole-start">게임 시작</button>
+    <p class="message" id="mole-message" role="status" aria-live="polite">시작 버튼을 눌러주세요.</p>
+  </section>
+  <script>
+  // 이 코드는 점수 계산, 시간 측정, 두더지 출현을 관리합니다.
+  (function () {
+    'use strict';
+    const root = document.getElementById('mole-game');
+    if (!root || root.dataset.ready === 'yes') return;
+    root.dataset.ready = 'yes'; // 블로그가 코드를 여러 번 불러와도 중복 실행하지 않게 합니다.
+    const holes = Array.from(root.querySelectorAll('.hole'));
+    const scoreText = root.querySelector('#mole-score');
+    const timeText = root.querySelector('#mole-time');
+    const bestText = root.querySelector('#mole-best');
+    const startButton = root.querySelector('#mole-start');
+    const message = root.querySelector('#mole-message');
+    const storageKey = 'my-mole-game-best-v1';
+    let score = 0, current = -1, running = false, hit = false;
+    let gameEnd = 0, appearTimer = null, clockTimer = null;
+    let best = 0;
+    try { best = Number(localStorage.getItem(storageKey)) || 0; } catch (e) { /* 저장 차단 시에도 게임은 됩니다. */ }
+    bestText.textContent = best;
+
+    // 화면에 나온 두더지를 지우고 다음 두더지 예약도 취소합니다.
+    function clearMole() {
+      clearTimeout(appearTimer);
+      holes.forEach(hole => hole.classList.remove('active', 'hit'));
+      current = -1;
+    }
+    function finishGame() {
+      if (!running) return;
+      running = false;
+      clearInterval(clockTimer);
+      clearMole();
+      timeText.textContent = '0';
+      startButton.disabled = false;
+      startButton.textContent = '다시 시작';
+      if (score > best) {
+        best = score;
+        bestText.textContent = best;
+        try { localStorage.setItem(storageKey, String(best)); } catch (e) { /* 비공개 모드 등에선 저장 생략 */ }
+        message.textContent = `🎉 새 최고기록! ${score}점!`;
+      } else {
+        message.textContent = `게임 종료! ${score}점이에요. 다시 도전해 보세요!`;
+      }
+    }
+    // 두더지가 1개씩 랜덤하게 나타납니다. 시간이 지나면 점점 빨라집니다.
+    function showMole() {
+      if (!running) return;
+      if (Date.now() >= gameEnd) { finishGame(); return; }
+      clearMole();
+      let next = Math.floor(Math.random() * holes.length);
+      if (next === currentPrevious && holes.length > 1) next = (next + 1 + Math.floor(Math.random() * (holes.length - 1))) % holes.length;
+      currentPrevious = next;
+      current = next;
+      hit = false;
+      holes[next].classList.add('active');
+      const elapsed = 30000 - (gameEnd - Date.now());
+      const duration = Math.max(430, 1000 - Math.floor(elapsed / 6000) * 100);
+      appearTimer = setTimeout(showMole, duration);
+    }
+    let currentPrevious = -1;
+    function startGame() {
+      clearInterval(clockTimer);
+      clearMole();
+      score = 0;
+      currentPrevious = -1;
+      scoreText.textContent = '0';
+      timeText.textContent = '30';
+      message.textContent = '두더지를 눌러 점수를 올리세요!';
+      running = true;
+      startButton.disabled = true;
+      startButton.textContent = '게임 진행 중';
+      gameEnd = Date.now() + 30000;
+      showMole();
+      // 실제 시각을 기준으로 남은 시간을 계산해 모바일에서도 정확히 끝냅니다.
+      clockTimer = setInterval(() => {
+        const remaining = Math.max(0, Math.ceil((gameEnd - Date.now()) / 1000));
+        timeText.textContent = String(remaining);
+        if (remaining === 0) finishGame();
+      }, 100);
+    }
+    holes.forEach((hole, index) => {
+      // click 이벤트는 스마트폰 터치와 PC 마우스 모두 지원합니다.
+      hole.addEventListener('click', () => {
+        if (!running || Date.now() >= gameEnd || index !== current || hit) return;
+        hit = true; // 한 두더지를 여러 번 눌러도 점수는 한 번만 올라갑니다.
+        score += 10;
+        scoreText.textContent = String(score);
+        hole.classList.remove('active');
+        hole.classList.add('hit');
+        clearTimeout(appearTimer);
+        appearTimer = setTimeout(showMole, 170);
+      });
+    });
+    startButton.addEventListener('click', startGame);
+  })();
+  </script>
